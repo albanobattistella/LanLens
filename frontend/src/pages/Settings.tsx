@@ -4,19 +4,38 @@ import Button from '../components/ui/Button'
 import Card from '../components/ui/Card'
 import Input from '../components/ui/Input'
 import Spinner from '../components/ui/Spinner'
+import { deepScanApi, type DeepScanCredential } from '../api/deepScan'
 import { settingsApi, type AllSettings } from '../api/settings'
 import { useI18n } from '../i18n'
+
+import CredentialsList from '../components/deepScan/CredentialsList'
 
 export default function Settings() {
   const { t, lang, setLang } = useI18n()
   const [settings, setSettings] = useState<AllSettings | null>(null)
+  const [credentials, setCredentials] = useState<DeepScanCredential[]>([])
   const [saving, setSaving] = useState(false)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
+  const [credentialForm, setCredentialForm] = useState({
+    name: '',
+    transport: 'ssh',
+    username: '',
+    port: '',
+    secret: '',
+    notes: '',
+    use_sudo: false,
+    verify_tls: true,
+  })
 
   useEffect(() => {
-    settingsApi.get().then(setSettings).catch(() => {
-      toast.error(lang === 'de' ? 'Einstellungen konnten nicht geladen werden' : 'Failed to load settings')
-    })
+    Promise.all([settingsApi.get(), deepScanApi.listCredentials()])
+      .then(([loadedSettings, loadedCredentials]) => {
+        setSettings(loadedSettings)
+        setCredentials(loadedCredentials)
+      })
+      .catch(() => {
+        toast.error(lang === 'de' ? 'Einstellungen konnten nicht geladen werden' : 'Failed to load settings')
+      })
   }, [lang])
 
   if (!settings) {
@@ -100,6 +119,68 @@ export default function Settings() {
       toast.success(lang === 'de' ? 'Testnachricht gesendet' : 'Test message sent')
     } catch {
       toast.error(lang === 'de' ? 'Telegram-Test fehlgeschlagen' : 'Telegram test failed')
+    }
+  }
+
+  async function saveDeepScan() {
+    setSaving(true)
+    try {
+      await settingsApi.updateDeepScan(current.deep_scan_enabled, current.deep_scan_default_profile)
+      toast.success(lang === 'de' ? 'Deep-Scan-Einstellungen gespeichert' : 'Deep scan settings saved')
+    } catch {
+      toast.error(lang === 'de' ? 'Deep-Scan-Einstellungen konnten nicht gespeichert werden' : 'Failed to save deep scan settings')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function createCredential() {
+    if (!credentialForm.name.trim() || !credentialForm.username.trim()) {
+      toast.error(lang === 'de' ? 'Name und Benutzer sind erforderlich' : 'Name and username are required')
+      return
+    }
+    setSaving(true)
+    try {
+      const created = await deepScanApi.createCredential({
+        name: credentialForm.name.trim(),
+        transport: credentialForm.transport,
+        username: credentialForm.username.trim(),
+        port: credentialForm.port ? Number(credentialForm.port) : undefined,
+        secret: credentialForm.secret || undefined,
+        notes: credentialForm.notes || undefined,
+        use_sudo: credentialForm.use_sudo,
+        verify_tls: credentialForm.verify_tls,
+      })
+      setCredentials((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)))
+      setCredentialForm({
+        name: '',
+        transport: credentialForm.transport,
+        username: '',
+        port: '',
+        secret: '',
+        notes: '',
+        use_sudo: false,
+        verify_tls: true,
+      })
+      toast.success(lang === 'de' ? 'Deep-Scan-Zugang gespeichert' : 'Deep scan credential saved')
+    } catch {
+      toast.error(lang === 'de' ? 'Deep-Scan-Zugang konnte nicht gespeichert werden' : 'Failed to save deep scan credential')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function deleteCredential(id: number) {
+    if (!confirm(lang === 'de' ? 'Diesen Deep-Scan-Zugang löschen?' : 'Delete this deep scan credential?')) return
+    setSaving(true)
+    try {
+      await deepScanApi.deleteCredential(id)
+      setCredentials((prev) => prev.filter((item) => item.id !== id))
+      toast.success(lang === 'de' ? 'Deep-Scan-Zugang gelöscht' : 'Deep scan credential deleted')
+    } catch {
+      toast.error(lang === 'de' ? 'Deep-Scan-Zugang konnte nicht gelöscht werden' : 'Failed to delete deep scan credential')
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -230,6 +311,124 @@ export default function Settings() {
       </Card>
 
       <Card>
+        <h2 className="text-lg font-semibold text-text-base mb-2">Deep Scan</h2>
+        <p className="text-sm text-text-subtle mb-4">
+          {lang === 'de'
+            ? 'Opt-in für credential-basiertes Inventory. Die gespeicherten Secrets bleiben serverseitig verschlüsselt, und pro Gerät wird nur ein Command-Plan protokolliert.'
+            : 'Opt-in credential-based inventory. Stored secrets stay encrypted on the server, and each device keeps an auditable command plan.'}
+        </p>
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <label className="flex items-center gap-2 text-sm text-text-base">
+            <input
+              type="checkbox"
+              checked={current.deep_scan_enabled}
+              onChange={(e) => setSettings({ ...current, deep_scan_enabled: e.target.checked })}
+            />
+            {lang === 'de' ? 'Deep Scan global aktivieren' : 'Enable deep scan globally'}
+          </label>
+
+          <div>
+            <label className="block text-sm text-text-subtle mb-1">{lang === 'de' ? 'Standard-Profil' : 'Default profile'}</label>
+            <select
+              className="input-field"
+              value={current.deep_scan_default_profile}
+              onChange={(e) => setSettings({ ...current, deep_scan_default_profile: e.target.value })}
+            >
+              <option value="basic">basic</option>
+              <option value="services">services</option>
+              <option value="hypervisor">hypervisor</option>
+              <option value="audit">audit</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="mt-4">
+          <Button onClick={saveDeepScan} loading={saving}>{t('save_changes')}</Button>
+        </div>
+
+        <div className="mt-6 pt-5 border-t border-border space-y-4">
+          <div>
+            <h3 className="text-sm font-semibold text-text-base mb-1">{lang === 'de' ? 'Gespeicherte Zugänge' : 'Stored credentials'}</h3>
+            <p className="text-xs text-text-subtle">
+              {lang === 'de'
+                ? 'Ein Gerät kann einen dieser Zugänge zugewiesen bekommen. Unterstützt werden aktuell SSH- und WinRM-Profile mit Passwort-Secret.'
+                : 'A device can be assigned one of these credentials. SSH and WinRM profiles with password secret are supported for now.'}
+            </p>
+          </div>
+
+          {credentials.length === 0 ? (
+            <p className="text-sm text-text-subtle">{lang === 'de' ? 'Noch keine Deep-Scan-Zugänge gespeichert.' : 'No deep scan credentials stored yet.'}</p>
+          ) : (
+            <div className="space-y-2">
+              {credentials.map((credential) => (
+                <div key={credential.id} className="rounded-lg border border-border bg-surface2 px-3 py-3 flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium text-text-base">{credential.name}</p>
+                    <p className="text-xs text-text-subtle">
+                      {credential.transport.toUpperCase()} · {credential.username}
+                      {credential.port ? `:${credential.port}` : ''}
+                      {credential.use_sudo ? ' · sudo' : ''}
+                    </p>
+                    {credential.notes && <p className="text-xs text-text-muted mt-1 whitespace-pre-wrap">{credential.notes}</p>}
+                  </div>
+                  <Button variant="ghost" size="sm" onClick={() => deleteCredential(credential.id)}>
+                    {lang === 'de' ? 'Löschen' : 'Delete'}
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="rounded-lg border border-border p-4 space-y-4">
+            <h3 className="text-sm font-semibold text-text-base">{lang === 'de' ? 'Neuen Zugang anlegen' : 'Create credential'}</h3>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <label className="block text-sm text-text-subtle mb-1">Name</label>
+                <Input value={credentialForm.name} onChange={(e) => setCredentialForm({ ...credentialForm, name: e.target.value })} placeholder="Linux Inventory" />
+              </div>
+              <div>
+                <label className="block text-sm text-text-subtle mb-1">Transport</label>
+                <select className="input-field" value={credentialForm.transport} onChange={(e) => setCredentialForm({ ...credentialForm, transport: e.target.value })}>
+                  <option value="ssh">SSH</option>
+                  <option value="winrm">WinRM</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm text-text-subtle mb-1">Username</label>
+                <Input value={credentialForm.username} onChange={(e) => setCredentialForm({ ...credentialForm, username: e.target.value })} placeholder={credentialForm.transport === 'ssh' ? 'scanner' : 'DOMAIN\\scanner'} />
+              </div>
+              <div>
+                <label className="block text-sm text-text-subtle mb-1">Port</label>
+                <Input value={credentialForm.port} onChange={(e) => setCredentialForm({ ...credentialForm, port: e.target.value })} placeholder={credentialForm.transport === 'ssh' ? '22' : '5985'} />
+              </div>
+              <div className="md:col-span-2">
+                <label className="block text-sm text-text-subtle mb-1">Secret</label>
+                <Input type="password" value={credentialForm.secret} onChange={(e) => setCredentialForm({ ...credentialForm, secret: e.target.value })} placeholder={lang === 'de' ? 'Passwort oder Shared Secret' : 'Password or shared secret'} />
+              </div>
+              <div className="md:col-span-2">
+                <label className="block text-sm text-text-subtle mb-1">Notes</label>
+                <Input value={credentialForm.notes} onChange={(e) => setCredentialForm({ ...credentialForm, notes: e.target.value })} placeholder={lang === 'de' ? 'z. B. nur lesender Audit-Account' : 'e.g. read-only audit account'} />
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-4 text-sm text-text-base">
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={credentialForm.use_sudo} onChange={(e) => setCredentialForm({ ...credentialForm, use_sudo: e.target.checked })} />
+                {lang === 'de' ? 'sudo für Linux-Probes einplanen' : 'Plan sudo for Linux probes'}
+              </label>
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={credentialForm.verify_tls} onChange={(e) => setCredentialForm({ ...credentialForm, verify_tls: e.target.checked })} />
+                {lang === 'de' ? 'TLS/Transport prüfen' : 'Verify TLS/transport'}
+              </label>
+            </div>
+
+            <Button onClick={createCredential} loading={saving}>{lang === 'de' ? 'Zugang speichern' : 'Save credential'}</Button>
+          </div>
+        </div>
+      </Card>
+
+      <Card>
         <h2 className="text-lg font-semibold text-text-base mb-4">Telegram</h2>
         <div className="grid gap-4">
           <div>
@@ -268,6 +467,14 @@ export default function Settings() {
           <Button onClick={testTelegram} variant="outline">{lang === 'de' ? 'Telegram testen' : 'Test Telegram'}</Button>
         </div>
       </Card>
+      <div className="grid grid-cols-2 gap-4">
+      <div>
+        {/* existing settings form left */}
+      </div>
+      <div>
+        <CredentialsList />
+      </div>
     </div>
+  </div>
   )
 }
